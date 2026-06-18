@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct AuriBudsApp: App {
@@ -40,6 +41,10 @@ struct AuriBudsApp: App {
                     }
                 }
                 .disabled(!canConnect)
+
+                Button("Export Xiaomi Diagnostics") {
+                    exportXiaomiDiagnostics()
+                }
             }
         }
 
@@ -56,6 +61,23 @@ struct AuriBudsApp: App {
                 .accessibilityLabel("AuriBuds")
         }
         .menuBarExtraStyle(.window)
+    }
+
+    private func exportXiaomiDiagnostics() {
+        do {
+            let temporaryURL = try XiaomiDiagnostics.shared.export()
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = temporaryURL.lastPathComponent
+            panel.allowedContentTypes = [.json]
+            if panel.runModal() == .OK, let destination = panel.url {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: temporaryURL, to: destination)
+            }
+        } catch {
+            NSLog("Export Xiaomi Diagnostics failed: \(error.localizedDescription)")
+        }
     }
 
     private var canRefreshBattery: Bool {

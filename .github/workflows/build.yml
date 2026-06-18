@@ -1,0 +1,87 @@
+name: Build AuriBuds
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: auribuds-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -d /Applications/Xcode.app/Contents/Developer ]; then
+            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          else
+            sudo xcode-select -s "$(find /Applications -maxdepth 1 -name 'Xcode*.app' | sort -Vr | head -n 1)/Contents/Developer"
+          fi
+          xcodebuild -version
+
+      - name: Build app
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project AuriBuds.xcodeproj \
+            -scheme AuriBuds \
+            -configuration Release \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+          mkdir -p build/artifacts
+          cp -R build/DerivedData/Build/Products/Release/AuriBuds.app build/artifacts/AuriBuds.app
+          ditto -c -k --keepParent build/artifacts/AuriBuds.app build/artifacts/AuriBuds.app.zip
+
+      - name: Install create-dmg
+        run: |
+          set -euo pipefail
+          if ! command -v create-dmg >/dev/null 2>&1; then
+            brew install create-dmg
+          fi
+
+      - name: Create DMG
+        run: |
+          set -euo pipefail
+          rm -f build/artifacts/AuriBuds.dmg
+          create-dmg \
+            --volname "AuriBuds" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "AuriBuds.app" 175 190 \
+            --hide-extension "AuriBuds.app" \
+            --app-drop-link 425 190 \
+            "build/artifacts/AuriBuds.dmg" \
+            "build/artifacts/AuriBuds.app"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuriBuds-macOS-${{ github.run_id }}
+          path: |
+            build/artifacts/AuriBuds.app
+            build/artifacts/AuriBuds.app.zip
+            build/artifacts/AuriBuds.dmg
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/artifacts/AuriBuds.app.zip
+            build/artifacts/AuriBuds.dmg

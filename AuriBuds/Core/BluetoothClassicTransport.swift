@@ -82,10 +82,12 @@ final class BluetoothClassicTransport {
         let profile = HeadphoneAdapterRegistry.shared.profile(for: deviceName)
         var channelIDs = profile.rfcommChannelIDs
         if XiaomiDeviceProfile.isLikelyXiaomiAudioDevice(deviceName) {
-            channelIDs = mergeChannels(
-                preferred: XiaomiDeviceProfile.preferredRFCOMMChannelIDs(for: device),
-                fallback: channelIDs
-            )
+            let preferred = XiaomiDeviceProfile.preferredRFCOMMChannelIDs(for: device)
+            channelIDs = mergeChannels(preferred: preferred, fallback: channelIDs)
+            XiaomiDiagnostics.shared.recordRFCOMM(device: device, channels: channelIDs)
+            if deviceName.localizedCaseInsensitiveContains("REDMI Buds 6 Pro") {
+                onEvent("redmi buds 6 pro rfcomm channels \(channelIDs.map(String.init).joined(separator: ","))")
+            }
         }
         var lastError: Error?
 

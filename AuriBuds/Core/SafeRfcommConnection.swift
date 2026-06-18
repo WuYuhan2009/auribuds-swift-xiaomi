@@ -93,6 +93,7 @@ final class SafeRfcommDelegate: NSObject {
     ) {
         guard let dataPointer, dataLength > 0 else { return }
         let data = Data(bytes: dataPointer, count: dataLength)
+        XiaomiDiagnostics.shared.recordSPPFrame(data)
         responseLock.lock()
         responseStorage.append(data)
         responseLock.unlock()
@@ -181,6 +182,7 @@ final class SafeRfcommConnection: OppoTransportConnection {
             throw SafeRfcommError.notConnected
         }
 
+        XiaomiDiagnostics.shared.recordSPPFrame(Data(bytes))
         var mutableBytes = bytes
         let status = mutableBytes.withUnsafeMutableBytes { buffer in
             channel.writeSync(buffer.baseAddress, length: UInt16(buffer.count))

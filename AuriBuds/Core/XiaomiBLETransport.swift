@@ -33,17 +33,21 @@ enum XiaomiBLETransportError: Error, LocalizedError, Equatable {
 final class XiaomiBLEConnection {
     private let peripheral: CBPeripheral
     private let writeCharacteristic: CBCharacteristic
+    private let writeType: CBCharacteristicWriteType
     private let responseLock = NSLock()
+    private let responseSemaphore = DispatchSemaphore(value: 0)
     private var responseStorage: [Data] = []
     private let onEvent: (String) -> Void
 
     init(
         peripheral: CBPeripheral,
         writeCharacteristic: CBCharacteristic,
+        writeType: CBCharacteristicWriteType,
         onEvent: @escaping (String) -> Void
     ) {
         self.peripheral = peripheral
         self.writeCharacteristic = writeCharacteristic
+        self.writeType = writeType
         self.onEvent = onEvent
     }
 
@@ -61,6 +65,8 @@ final class XiaomiBLEConnection {
         responseLock.lock()
         responseStorage.append(data)
         responseLock.unlock()
+        responseSemaphore.signal()
+        XiaomiDiagnostics.shared.recordBLEFrame(data)
         onEvent("ble recv frame \(data.hexString)")
     }
 
@@ -75,7 +81,8 @@ final class XiaomiBLEConnection {
 
     func write(_ bytes: [UInt8]) throws {
         guard isOpen else { throw XiaomiBLETransportError.notConnected }
-        peripheral.writeValue(Data(bytes), for: writeCharacteristic, type: .withResponse)
+        peripheral.writeValue(Data(bytes), for: writeCharacteristic, type: writeType)
+        XiaomiDiagnostics.shared.recordBLEFrame(Data(bytes))
         onEvent("ble write queued \(bytes.hexString)")
     }
 
@@ -83,7 +90,12 @@ final class XiaomiBLEConnection {
         let deadline = Date().addingTimeInterval(timeout)
 
         while isOpen && Date() < deadline {
-            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.02))
+            if responsesSince(baseline).isEmpty {
+                let remaining = max(0, deadline.timeIntervalSinceNow)
+                _ = responseSemaphore.wait(timeout: .now() + min(remaining, 0.25))
+            } else {
+                break
+            }
         }
 
         return responsesSince(baseline)
@@ -91,15 +103,7 @@ final class XiaomiBLEConnection {
 }
 
 final class XiaomiBLETransport: NSObject, @unchecked Sendable {
-    private let serviceUUID = CBUUID(string: "0000AF00-0000-1000-8000-00805F9B34FB")
-    private let writeUUIDs: Set<CBUUID> = [
-        CBUUID(string: "0000AF05-0000-1000-8000-00805F9B34FB"),
-        CBUUID(string: "0000AF07-0000-1000-8000-00805F9B34FB")
-    ]
-    private let notifyUUIDs: Set<CBUUID> = [
-        CBUUID(string: "0000AF06-0000-1000-8000-00805F9B34FB"),
-        CBUUID(string: "0000AF08-0000-1000-8000-00805F9B34FB")
-    ]
+    private let priorityUUIDFragments = ["AF00", "AF05", "AF06", "AF07", "AF08"]
 
     private var central: CBCentralManager!
     private var stateContinuation: CheckedContinuation<Void, Error>?
@@ -109,6 +113,9 @@ final class XiaomiBLETransport: NSObject, @unchecked Sendable {
     private var normalizedTargetName = ""
     private var pendingPeripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
+    private var notifyCharacteristic: CBCharacteristic?
+    private var discoveredServiceCount = 0
+    private var writeType: CBCharacteristicWriteType = .withResponse
     private var activeConnection: XiaomiBLEConnection?
     private var onEvent: ((String) -> Void)?
 
@@ -119,7 +126,7 @@ final class XiaomiBLETransport: NSObject, @unchecked Sendable {
 
     func connect(
         deviceName: String,
-        timeout: TimeInterval = 10,
+        timeout: TimeInterval = 30,
         onEvent: @escaping (String) -> Void
     ) async throws -> XiaomiBLEConnection {
         self.onEvent = onEvent
@@ -132,18 +139,12 @@ final class XiaomiBLETransport: NSObject, @unchecked Sendable {
                 self.targetName = deviceName
                 self.normalizedTargetName = XiaomiDeviceProfile.normalized(deviceName)
                 self.writeCharacteristic = nil
+                self.notifyCharacteristic = nil
+                self.discoveredServiceCount = 0
                 self.activeConnection = nil
-                self.emit("ble scan start \(deviceName)")
+                self.emit("ble connect pipeline start \(deviceName)")
 
-                let connected = self.central.retrieveConnectedPeripherals(withServices: [self.serviceUUID])
-                if let peripheral = connected.first(where: { self.matches($0) }) {
-                    self.connect(peripheral)
-                } else {
-                    self.central.scanForPeripherals(
-                        withServices: nil,
-                        options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
-                    )
-                }
+                self.tryRetrievedConnectedPeripheralOrScan()
 
                 self.connectTimeoutTask?.cancel()
                 self.connectTimeoutTask = Task { [weak self] in
@@ -204,6 +205,26 @@ final class XiaomiBLETransport: NSObject, @unchecked Sendable {
         return normalizedPeripheralName.contains(normalizedTargetName)
             || normalizedTargetName.contains(normalizedPeripheralName)
             || XiaomiDeviceProfile.isLikelyXiaomiAudioDevice(name)
+    }
+
+    private func tryRetrievedConnectedPeripheralOrScan() {
+        let knownServices = priorityUUIDFragments.map { CBUUID(string: "0000\($0)-0000-1000-8000-00805F9B34FB") }
+        let connected = central.retrieveConnectedPeripherals(withServices: knownServices)
+        if let peripheral = connected.first(where: { matches($0) }) {
+            emit("ble retrieveConnectedPeripherals matched \(peripheral.name ?? "unknown")")
+            connect(peripheral)
+            return
+        }
+
+        let identifiers = central.retrievePeripherals(withIdentifiers: connected.map(\.identifier))
+        if let peripheral = identifiers.first(where: { matches($0) }) {
+            emit("ble retrievePeripherals matched \(peripheral.name ?? "unknown")")
+            connect(peripheral)
+            return
+        }
+
+        emit("ble scanForPeripherals fallback")
+        central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
     }
 
     private func connect(_ peripheral: CBPeripheral) {
@@ -274,7 +295,7 @@ extension XiaomiBLETransport: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         emit("ble connected")
-        peripheral.discoverServices([serviceUUID])
+        peripheral.discoverServices(nil)
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -293,12 +314,18 @@ extension XiaomiBLETransport: CBPeripheralDelegate {
             return
         }
 
-        guard let service = peripheral.services?.first(where: { $0.uuid == serviceUUID }) else {
+        let services = peripheral.services ?? []
+        guard !services.isEmpty else {
             completeConnect(.failure(XiaomiBLETransportError.serviceNotFound))
             return
         }
 
-        peripheral.discoverCharacteristics(Array(writeUUIDs.union(notifyUUIDs)), for: service)
+        discoveredServiceCount = services.count
+        XiaomiDiagnostics.shared.recordBLEServices(peripheralName: peripheral.name ?? targetName, services: services)
+        for service in services {
+            emit("service: \(service.uuid.uuidString)")
+            peripheral.discoverCharacteristics(nil, for: service)
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
@@ -312,29 +339,66 @@ extension XiaomiBLETransport: CBPeripheralDelegate {
             return
         }
 
+        XiaomiDiagnostics.shared.recordBLECharacteristics(service: service, characteristics: characteristics)
         for characteristic in characteristics {
-            if writeUUIDs.contains(characteristic.uuid) {
-                writeCharacteristic = characteristic
-                emit("ble write characteristic \(characteristic.uuid.uuidString)")
-            }
-
-            if notifyUUIDs.contains(characteristic.uuid) {
-                peripheral.setNotifyValue(true, for: characteristic)
-                emit("ble notify characteristic \(characteristic.uuid.uuidString)")
-            }
+            emit("characteristic: \(characteristic.uuid.uuidString) properties: \(characteristic.properties.auribudsDescription)")
+            peripheral.discoverDescriptors(for: characteristic)
+            classify(characteristic, on: peripheral)
         }
 
+        discoveredServiceCount -= 1
+        if discoveredServiceCount <= 0 {
+            finishCharacteristicDiscovery(for: peripheral)
+        }
+    }
+
+
+    private func classify(_ characteristic: CBCharacteristic, on peripheral: CBPeripheral) {
+        let properties = characteristic.properties
+        let score = priorityScore(characteristic.uuid)
+        if properties.contains(.notify) || properties.contains(.indicate) {
+            if notifyCharacteristic == nil || score < priorityScore(notifyCharacteristic!.uuid) {
+                notifyCharacteristic = characteristic
+            }
+            peripheral.setNotifyValue(true, for: characteristic)
+            emit("ble notify characteristic \(characteristic.uuid.uuidString)")
+        }
+
+        if properties.contains(.write) || properties.contains(.writeWithoutResponse) {
+            if writeCharacteristic == nil || score < priorityScore(writeCharacteristic!.uuid) {
+                writeCharacteristic = characteristic
+                writeType = properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+            }
+            emit("ble write characteristic \(characteristic.uuid.uuidString)")
+        }
+    }
+
+    private func finishCharacteristicDiscovery(for peripheral: CBPeripheral) {
         guard let writeCharacteristic else {
             completeConnect(.failure(XiaomiBLETransportError.characteristicNotFound))
             return
         }
-
+        emit("ble rcsp candidate write=\(writeCharacteristic.uuid.uuidString) notify=\(notifyCharacteristic?.uuid.uuidString ?? "none")")
         let connection = XiaomiBLEConnection(
             peripheral: peripheral,
             writeCharacteristic: writeCharacteristic,
+            writeType: writeType,
             onEvent: { [weak self] event in self?.emit(event) }
         )
         completeConnect(.success(connection))
+    }
+
+    private func priorityScore(_ uuid: CBUUID) -> Int {
+        let value = uuid.uuidString.uppercased()
+        return priorityUUIDFragments.firstIndex(where: { value.contains($0) }) ?? priorityUUIDFragments.count
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverDescriptorsFor characteristic: CBCharacteristic, error: Error?) {
+        if let error { emit("descriptor error \(error.localizedDescription)"); return }
+        XiaomiDiagnostics.shared.recordBLEDescriptors(characteristic: characteristic, descriptors: characteristic.descriptors ?? [])
+        for descriptor in characteristic.descriptors ?? [] {
+            emit("descriptor: \(descriptor.uuid.uuidString) characteristic: \(characteristic.uuid.uuidString)")
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
