@@ -69,12 +69,14 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             registerDisconnectNotification(for: device)
         }
 
-        classicSnapshots = Dictionary(
-            uniqueKeysWithValues: devices.map { device in
-                let snapshot = snapshot(for: device, isConnected: device.isConnected())
-                return (snapshot.id, snapshot)
+        classicSnapshots = devices.reduce(into: [:]) { snapshots, device in
+            let snapshot = snapshot(for: device, isConnected: device.isConnected())
+            if snapshots[snapshot.id] != nil {
+                print("duplicate bluetooth address detected: \(snapshot.id)")
+                XiaomiDiagnostics.shared.recordError("duplicate bluetooth address detected: \(snapshot.id)")
             }
-        )
+            snapshots[snapshot.id] = snapshot
+        }
 
         publishAvailableDevices()
     }
@@ -172,6 +174,10 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
     ) {
         let snapshot = snapshot(for: peripheral, advertisementData: advertisementData)
         guard HeadphoneAdapterRegistry.shared.canControl(snapshot) else { return }
+        if bleSnapshots[snapshot.id] != nil {
+            print("duplicate bluetooth address detected: \(snapshot.id)")
+            XiaomiDiagnostics.shared.recordError("duplicate bluetooth address detected: \(snapshot.id)")
+        }
         bleSnapshots[snapshot.id] = snapshot
         publishAvailableDevices()
     }

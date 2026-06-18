@@ -5,7 +5,7 @@ struct XiaomiDeviceProfile: Equatable {
     let channelIDs: [BluetoothRFCOMMChannelID]
 
     static func profile(for deviceName: String) -> XiaomiDeviceProfile {
-        XiaomiDeviceProfile(channelIDs: [18, 12, 19, 15])
+        XiaomiDeviceProfile(channelIDs: [])
     }
 
     static func preferredRFCOMMChannelIDs(for device: IOBluetoothDevice) -> [BluetoothRFCOMMChannelID] {
@@ -33,9 +33,10 @@ struct XiaomiDeviceProfile: Equatable {
             return (rank, channelID)
         }
 
-        return orderedUniqueChannels(rankedChannels.sorted { lhs, rhs in
+        let ordered = orderedUniqueChannels(rankedChannels.sorted { lhs, rhs in
             lhs.rank == rhs.rank ? lhs.channel < rhs.channel : lhs.rank < rhs.rank
         }.map(\.channel))
+        return ordered
     }
 
     static func isLikelyXiaomiAudioDevice(_ deviceName: String) -> Bool {
