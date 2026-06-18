@@ -27,20 +27,20 @@ final class XiaomiDiagnostics {
     func recordBLEServices(peripheralName: String, services: [CBService]) {
         lock.lock(); defer { lock.unlock() }
         deviceName = peripheralName
-        for service in services { appendUnique("service: \(service.uuid.uuidString)", to: &self.services) }
+        for service in services { Self.appendUnique("service: \(service.uuid.uuidString)", to: &self.services) }
     }
 
     func recordBLECharacteristics(service: CBService, characteristics: [CBCharacteristic]) {
         lock.lock(); defer { lock.unlock() }
         for characteristic in characteristics {
-            appendUnique("service: \(service.uuid.uuidString) characteristic: \(characteristic.uuid.uuidString) properties: \(characteristic.properties.auribudsDescription)", to: &self.characteristics)
+            Self.appendUnique("service: \(service.uuid.uuidString) characteristic: \(characteristic.uuid.uuidString) properties: \(characteristic.properties.auribudsDescription)", to: &self.characteristics)
         }
     }
 
     func recordBLEDescriptors(characteristic: CBCharacteristic, descriptors: [CBDescriptor]) {
         lock.lock(); defer { lock.unlock() }
         for descriptor in descriptors {
-            appendUnique("characteristic: \(characteristic.uuid.uuidString) descriptor: \(descriptor.uuid.uuidString)", to: &self.descriptors)
+            Self.appendUnique("characteristic: \(characteristic.uuid.uuidString) descriptor: \(descriptor.uuid.uuidString)", to: &self.descriptors)
         }
     }
 
@@ -48,7 +48,7 @@ final class XiaomiDiagnostics {
         lock.lock(); defer { lock.unlock() }
         deviceName = device.name ?? deviceName
         address = device.addressString ?? address
-        for channel in channels { appendUnique("channel: \(channel)", to: &self.rfcommChannels) }
+        for channel in channels { Self.appendUnique("channel: \(channel)", to: &self.rfcommChannels) }
     }
 
     func recordBLEFrame(_ data: Data) { appendFrame(data.hexString, toBLE: true) }
@@ -56,7 +56,7 @@ final class XiaomiDiagnostics {
 
     func recordError(_ error: String) {
         lock.lock(); defer { lock.unlock() }
-        appendUnique(error, to: &errors)
+        Self.appendUnique(error, to: &self.errors)
     }
 
     func export() throws -> URL {
@@ -86,7 +86,7 @@ final class XiaomiDiagnostics {
         else { sppFrames.append(value); if sppFrames.count > 200 { sppFrames.removeFirst(sppFrames.count - 200) } }
     }
 
-    private func appendUnique(_ value: String, to array: inout [String]) {
+    private static func appendUnique(_ value: String, to array: inout [String]) {
         guard !array.contains(value) else { return }
         array.append(value)
     }
